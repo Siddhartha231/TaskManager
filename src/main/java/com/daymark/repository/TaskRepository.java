@@ -4,18 +4,38 @@ import com.daymark.domain.Task;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;  //The unique id that is assigned to each task
+import java.util.UUID;
 
-//An interface to describe the options for the UI
+/** Persistence boundary for task storage. */
 public interface TaskRepository {
-    //inserting a task
+    /**
+     * Adds a new task to storage.
+     *
+     * @throws RuntimeException if the task cannot be saved
+     */
     Task insert(Task task);
-    //updates a task
+
+    /**
+     * Updates an existing task in storage.
+     *
+     * @throws RuntimeException if the task does not exist or cannot be saved
+     */
     Task update(Task task);
-    //finds a task its unique id
+
+    /**
+     * Finds a task by its identifier.
+     *
+     * @return the task, or an empty result when no task has that identifier
+     */
     Optional<Task> findById(UUID id);
-    //returns ALL tasks
+
+    /**
+     * Returns all stored tasks in the repository's stable ordering.
+     */
     List<Task> findAll();
-    //deletes a task by its unique id
+
+    /**
+     * Deletes a task when it exists; deleting an unknown identifier is harmless.
+     */
     void deleteById(UUID id);
 }
