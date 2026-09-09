@@ -15,43 +15,44 @@ import java.util.Objects;
 
 /** JavaFX entry point for Daymark. */
 public final class DaymarkApplication extends Application {
-    //Logger to record any errors 
     private static final System.Logger LOGGER = System.getLogger(DaymarkApplication.class.getName());
-    //Stage is the application window 
+    // Make sure the local database is ready before building the task screens.
     @Override
     public void start(Stage stage) {
         try {
-            //Opens or creates the sqlite database in the default location
             DatabaseManager.forDefaultLocation().initialize();
-            //If the databse fails than it catches the exception
-        } catch (PersistenceException exception) {
+        } 
+        // A missing or unavailable database means the app cannot safely continue.
+        catch (PersistenceException exception) {
             LOGGER.log(System.Logger.Level.ERROR, "Daymark database startup failed", exception);
             showStartupFailure();
             Platform.exit();
             return;
         }
-        //Building the layout 
+        // Temporary foundation screen; this will become the Today task view.
         Label title = new Label("Daymark foundation is ready");
         title.getStyleClass().add("foundation-title");
+
         StackPane root = new StackPane(title);
         root.setAlignment(Pos.CENTER);
         root.getStyleClass().add("app-root");
+        // Temporary foundation screen; this will become the Today task view.
+        // The first real screen will eventually contain navigation, task lists, and task actions.
         Scene scene = new Scene(root, 1_000, 700);
-        //Loads a style sheet from Daymark.CSS
         scene.getStylesheets().add(
                 Objects.requireNonNull(
                         DaymarkApplication.class.getResource("/com/daymark/ui/daymark.css"),
                         "Daymark stylesheet is missing"
                 ).toExternalForm()
         );
-        // Sets the properties of the main words on the screen and the sizeo of the font
+     
         stage.setTitle("Daymark");
         stage.setMinWidth(760);
         stage.setMinHeight(520);
         stage.setScene(scene);
         stage.show();
     }
-    //Error dialog if the database fails to load
+
     private void showStartupFailure() {
         Alert alert = new Alert(Alert.AlertType.ERROR);
         alert.setTitle("Daymark could not start");
@@ -59,6 +60,7 @@ public final class DaymarkApplication extends Application {
         alert.setContentText("Check that your local application-data folder is available and try again.");
         alert.showAndWait();
     }
+
     public static void main(String[] args) {
         launch(args);
     }
