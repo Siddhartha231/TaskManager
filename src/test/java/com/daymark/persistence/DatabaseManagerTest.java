@@ -1,92 +1,62 @@
 package com.daymark.persistence;
 
+import com.daymark.domain.Priority;
+import com.daymark.domain.Recurrence;
+import com.daymark.domain.Task;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
-import java.sql.ResultSet;
+import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.LocalDate;
+import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class DatabaseManagerTest {
-    @TempDir
-    Path temporaryDirectory;
 
+    // A database file created before repeating tasks existed has no recurrence column.
+    // Opening it with the current code should add the column and keep the old tasks.
     @Test
-    void createsDatabaseSchemaAndIndex() throws SQLException {
-        Path databasePath = temporaryDirectory.resolve("nested/daymark.db");
-        DatabaseManager databaseManager = new DatabaseManager(databasePath);
+    void testOldDatabaseFileIsUpgraded(@TempDir Path folder) throws SQLException {
+        String path = folder.resolve("old-daymark.db").toString();
 
-        databaseManager.initialize();
+        Connection old = DriverManager.getConnection("jdbc:sqlite:" + path);
+        Statement stmt = old.createStatement();
+        stmt.execute("CREATE TABLE tasks ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "title TEXT NOT NULL,"
+                + "description TEXT,"
+                + "due_date TEXT,"
+                + "priority TEXT,"
+                + "done INTEGER DEFAULT 0,"
+                + "created_at TEXT"
+                + ")");
+        stmt.execute("INSERT INTO tasks (title, due_date, priority, done, created_at) "
+                + "VALUES ('Finish lab 4', '2025-03-14', 'HIGH', 0, '2025-03-01T10:00:00')");
+        stmt.close();
+        old.close();
 
-        assertTrue(Files.isRegularFile(databasePath));
-        assertEquals(1, countSchemaObjects(databaseManager, "table", "tasks"));
-        assertEquals(1, countSchemaObjects(databaseManager, "index", "idx_tasks_status_due_date"));
-    }
+        DatabaseManager db = new DatabaseManager(path);
+        SQLiteTaskRepository repo = new SQLiteTaskRepository(db);
 
-    @Test
-    void initializationIsIdempotent() throws SQLException {
-        DatabaseManager databaseManager = new DatabaseManager(
-                temporaryDirectory.resolve("daymark.db")
-        );
+        List<Task> all = repo.findAll();
+        assertEquals(1, all.size());
+        assertEquals("Finish lab 4", all.get(0).title());
+        assertEquals(LocalDate.of(2025, 3, 14), all.get(0).dueDate());
+        assertEquals(Recurrence.NONE, all.get(0).recurrence());
 
-        databaseManager.initialize();
-        databaseManager.initialize();
+        // and new repeating tasks can be saved into the upgraded file
+        Task rent = repo.insert(new Task("Pay rent", null, null, Priority.MEDIUM).withRecurrence(Recurrence.MONTHLY));
+        assertEquals(Recurrence.MONTHLY, repo.findById(rent.id()).recurrence());
+        db.close();
 
-        assertEquals(1, countSchemaObjects(databaseManager, "table", "tasks"));
-        assertEquals(1, countSchemaObjects(databaseManager, "index", "idx_tasks_status_due_date"));
-    }
-
-    @Test
-    void invalidParentLocationThrowsPersistenceException() throws IOException {
-        Path regularFile = Files.createFile(temporaryDirectory.resolve("not-a-directory"));
-        DatabaseManager databaseManager = new DatabaseManager(
-                regularFile.resolve("daymark.db")
-        );
-
-        assertThrows(PersistenceException.class, databaseManager::initialize);
-    }
-
-    @Test
-    void configuredConnectionsEnableForeignKeysAndBusyTimeout() throws SQLException {
-        DatabaseManager databaseManager = new DatabaseManager(
-                temporaryDirectory.resolve("daymark.db")
-        );
-        databaseManager.initialize();
-
-        try (Connection connection = databaseManager.openConnection();
-             Statement statement = connection.createStatement()) {
-            assertEquals(1, pragmaValue(statement, "foreign_keys"));
-            assertEquals(5_000, pragmaValue(statement, "busy_timeout"));
-        }
-    }
-
-    private int countSchemaObjects(
-            DatabaseManager databaseManager,
-            String type,
-            String name
-    ) throws SQLException {
-        String sql = "SELECT COUNT(*) FROM sqlite_master WHERE type = '%s' AND name = '%s'"
-                .formatted(type, name);
-        try (Connection connection = databaseManager.openConnection();
-             Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery(sql)) {
-            resultSet.next();
-            return resultSet.getInt(1);
-        }
-    }
-
-    private int pragmaValue(Statement statement, String pragma) throws SQLException {
-        try (ResultSet resultSet = statement.executeQuery("PRAGMA " + pragma)) {
-            resultSet.next();
-            return resultSet.getInt(1);
-        }
+        // opening it a second time must not try to add the column again
+        DatabaseManager again = new DatabaseManager(path);
+        assertEquals(2, new SQLiteTaskRepository(again).findAll().size());
+        again.close();
     }
 }

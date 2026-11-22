@@ -1,291 +1,596 @@
 package com.daymark.ui;
 
+import com.daymark.domain.Recurrence;
 import com.daymark.domain.Task;
-import com.daymark.domain.TaskStatus;
-import com.daymark.service.TaskNotFoundException;
+import com.daymark.io.CsvTasks;
+import com.daymark.io.IcsExporter;
 import com.daymark.service.TaskService;
-import com.daymark.service.TaskValidationException;
-import javafx.application.Platform;
-import javafx.beans.property.BooleanProperty;
-import javafx.beans.property.SimpleBooleanProperty;
+import javafx.beans.property.SimpleStringProperty;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.geometry.Insets;
 import javafx.geometry.Pos;
-import javafx.scene.control.*;
-import javafx.scene.layout.*;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckMenuItem;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.Menu;
+import javafx.scene.control.MenuBar;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableRow;
+import javafx.scene.control.TableView;
+import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
+import javafx.stage.FileChooser;
 
-import java.time.Clock;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
+import java.util.Optional;
 
-/** Owns the screen and sends task operations through the service. */
-public final class TaskBrowser extends BorderPane implements AutoCloseable {
-    private static final System.Logger LOGGER = System.getLogger(TaskBrowser.class.getName());
-    private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("MMM d, uuuu");
+public class TaskBrowser extends BorderPane {
+
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("MM/dd/yyyy");
+
     private final TaskService service;
-    private final Clock clock;
-    private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "daymark-storage");
-        thread.setDaemon(true);
-        return thread;
-    });
-    private final BooleanProperty busy = new SimpleBooleanProperty();
-    private final ListView<Task> taskList = new ListView<>();
-    private final TextField search = new TextField();
-    private final Label heading = new Label();
-    private final Label description = new Label();
-    private final Label feedback = new Label();
-    private List<Task> tasks = List.of();
-    private TaskView currentView = TaskView.TODAY;
-    private boolean loaded;
-    private boolean loadFailed;
-    private boolean closed;
 
-    public TaskBrowser(TaskService service, Clock clock) {
+    private final TableView<Task> table = new TableView<>();
+    private final ObservableList<Task> allTasks = FXCollections.observableArrayList();
+
+    private final ComboBox<String> viewBox = new ComboBox<>();
+    private final ComboBox<String> priorityBox = new ComboBox<>();
+    private final TextField searchField = new TextField();
+    private final TextField quickAddField = new TextField();
+
+    private final Button doneButton = new Button("Mark Done");
+
+    // bottom right: says what just happened, with an Undo button after a delete
+    private final Label statusLabel = new Label();
+    private final Button undoButton = new Button("Undo");
+
+    public TaskBrowser(TaskService service) {
         this.service = service;
-        this.clock = clock;
-        getStyleClass().add("app-root");
-        setLeft(sidebar());
-        heading.getStyleClass().add("page-title");
-        description.getStyleClass().add("muted");
-        Button create = new Button("+ New task");
-        create.setId("new-task");
-        create.getStyleClass().add("primary-button");
-        create.setOnAction(event -> edit(null));
-        create.disableProperty().bind(busy);
+
+        // ids so the UI tests can find things
+        table.setId("taskTable");
+        searchField.setId("searchField");
+        viewBox.setId("viewBox");
+        priorityBox.setId("priorityFilter");
+        doneButton.setId("doneButton");
+        quickAddField.setId("quickAddField");
+        statusLabel.setId("statusLabel");
+        statusLabel.getStyleClass().add("status-label");
+        undoButton.setId("undoButton");
+
+        setTop(buildTopBar());
+        setCenter(buildTable());
+        setBottom(buildButtonBar());
+
+        // light or dark, whichever was used last time
+        Theme.apply(this);
+
+        loadTasks();
+    }
+
+    private VBox buildTopBar() {
+        Label title = new Label("Daymark");
+        title.getStyleClass().add("app-title");
+
+        viewBox.getItems().addAll("Today", "All Tasks", "Completed");
+        viewBox.setValue("All Tasks");
+        viewBox.setOnAction(e -> refreshTable());
+
+        priorityBox.getItems().addAll("All", "Low", "Medium", "High");
+        priorityBox.setValue("All");
+        priorityBox.setOnAction(e -> refreshTable());
+
+        quickAddField.setPromptText("Quick add - type something like \"essay due fri !high\" and press Enter");
+        quickAddField.setOnAction(e -> quickAdd());
+        quickAddField.getStyleClass().add("quick-add");
+
+        searchField.setPromptText("Search...");
+        searchField.setPrefWidth(200);
+        searchField.textProperty().addListener((obs, oldVal, newVal) -> refreshTable());
+
+        HBox filters = new HBox(10,
+                new Label("View:"), viewBox,
+                new Label("Priority:"), priorityBox,
+                searchField);
+        filters.setAlignment(Pos.CENTER_LEFT);
+
+        // Escape in the search box clears it and goes back to the list
+        searchField.setOnKeyPressed(e -> {
+            if (e.getCode() == KeyCode.ESCAPE) {
+                searchField.clear();
+                table.requestFocus();
+            }
+        });
+
+        VBox content = new VBox(10, title, quickAddField, filters);
+        content.setPadding(new Insets(15, 15, 10, 15));
+        return new VBox(buildMenuBar(), content);
+    }
+
+    // Every action is in a menu with its keyboard shortcut next to it.
+    // SHORTCUT_DOWN means Ctrl on Windows/Linux and Cmd on a Mac.
+    private MenuBar buildMenuBar() {
+        Menu fileMenu = new Menu("File");
+        fileMenu.getItems().addAll(
+                menuItem("Import CSV...", shortcut(KeyCode.I), this::chooseImportCsv),
+                menuItem("Export CSV...", shortcut(KeyCode.S), this::chooseExportCsv),
+                menuItem("Export Calendar (.ics)...", shiftShortcut(KeyCode.S), this::chooseExportIcs));
+
+        Menu taskMenu = new Menu("Task");
+        MenuItem editItem = menuItem("Edit Task", shortcut(KeyCode.E), this::editTask);
+        MenuItem doneItem = menuItem("Mark Done / Undone", shortcut(KeyCode.D), this::toggleDone);
+        // no accelerator here on purpose: the Delete key is handled by the table (see buildTable),
+        // otherwise pressing Delete while typing in a text box would delete a task
+        MenuItem deleteItem = menuItem("Delete Task", null, this::deleteTask);
+        editItem.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        doneItem.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        deleteItem.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        taskMenu.getItems().addAll(
+                menuItem("New Task...", shortcut(KeyCode.N), this::addTask),
+                menuItem("Quick Add", shortcut(KeyCode.L), quickAddField::requestFocus),
+                new SeparatorMenuItem(),
+                editItem, doneItem, deleteItem,
+                menuItem("Undo Delete", shortcut(KeyCode.Z), this::undoDelete));
+
+        CheckMenuItem darkModeItem = new CheckMenuItem("Dark Mode");
+        darkModeItem.setId("darkModeItem");
+        darkModeItem.setAccelerator(shiftShortcut(KeyCode.D));
+        darkModeItem.setSelected(Theme.isDark());
+        darkModeItem.setOnAction(e -> {
+            Theme.setDark(darkModeItem.isSelected());
+            Theme.apply(this);
+        });
+
+        Menu viewMenu = new Menu("View");
+        viewMenu.getItems().addAll(
+                menuItem("Search", shortcut(KeyCode.F), searchField::requestFocus),
+                new SeparatorMenuItem(),
+                menuItem("Today", shortcut(KeyCode.DIGIT1), () -> viewBox.setValue("Today")),
+                menuItem("All Tasks", shortcut(KeyCode.DIGIT2), () -> viewBox.setValue("All Tasks")),
+                menuItem("Completed", shortcut(KeyCode.DIGIT3), () -> viewBox.setValue("Completed")),
+                new SeparatorMenuItem(),
+                darkModeItem);
+
+        Menu helpMenu = new Menu("Help");
+        helpMenu.getItems().add(menuItem("Keyboard Shortcuts", new KeyCodeCombination(KeyCode.F1), this::showShortcuts));
+
+        return new MenuBar(fileMenu, taskMenu, viewMenu, helpMenu);
+    }
+
+    private MenuItem menuItem(String text, KeyCombination keys, Runnable action) {
+        MenuItem item = new MenuItem(text);
+        if (keys != null) {
+            item.setAccelerator(keys);
+        }
+        item.setOnAction(e -> action.run());
+        return item;
+    }
+
+    private KeyCombination shortcut(KeyCode key) {
+        return new KeyCodeCombination(key, KeyCombination.SHORTCUT_DOWN);
+    }
+
+    private KeyCombination shiftShortcut(KeyCode key) {
+        return new KeyCodeCombination(key, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN);
+    }
+
+    private TableView<Task> buildTable() {
+        TableColumn<Task, String> titleCol = new TableColumn<>("Title");
+        titleCol.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().title()));
+        titleCol.setPrefWidth(300);
+
+        TableColumn<Task, String> dueCol = new TableColumn<>("Due Date");
+        dueCol.setCellValueFactory(data -> {
+            LocalDate due = data.getValue().dueDate();
+            return new SimpleStringProperty(due == null ? "" : DATE_FORMAT.format(due));
+        });
+        dueCol.setPrefWidth(120);
+
+        TableColumn<Task, String> priorityCol = new TableColumn<>("Priority");
+        priorityCol.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().priority().toString()));
+        priorityCol.setPrefWidth(100);
+
+        TableColumn<Task, String> doneCol = new TableColumn<>("Done");
+        doneCol.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().done() ? "✓" : ""));
+        doneCol.setPrefWidth(70);
+
+        TableColumn<Task, String> descCol = new TableColumn<>("Description");
+        descCol.setCellValueFactory(data -> {
+            String d = data.getValue().description();
+            return new SimpleStringProperty(d == null ? "" : d);
+        });
+        descCol.setPrefWidth(180);
+
+        TableColumn<Task, String> repeatsCol = new TableColumn<>("Repeats");
+        repeatsCol.setCellValueFactory(data -> {
+            Recurrence r = data.getValue().recurrence();
+            return new SimpleStringProperty(r == Recurrence.NONE ? "" : r.toString());
+        });
+        repeatsCol.setPrefWidth(80);
+
+        table.getColumns().addAll(titleCol, dueCol, priorityCol, repeatsCol, doneCol, descCol);
+        table.setPlaceholder(new Label("No tasks"));
+
+        // highlight overdue rows in red
+        table.setRowFactory(tv -> new TableRow<Task>() {
+            @Override
+            protected void updateItem(Task task, boolean empty) {
+                super.updateItem(task, empty);
+                getStyleClass().remove("overdue");
+                if (task != null && !empty && task.isOverdue()) {
+                    getStyleClass().add("overdue");
+                }
+            }
+        });
+
+        // the done button label depends on which task is selected
+        table.getSelectionModel().selectedItemProperty().addListener((obs, oldTask, newTask) -> {
+            if (newTask != null && newTask.done()) {
+                doneButton.setText("Mark Undone");
+            } else {
+                doneButton.setText("Mark Done");
+            }
+        });
+
+        // keys that only make sense while the list has focus
+        table.setOnKeyPressed(e -> {
+            if (e.getCode() == KeyCode.DELETE || e.getCode() == KeyCode.BACK_SPACE) {
+                deleteTask();
+            } else if (e.getCode() == KeyCode.ENTER) {
+                editTask();
+            } else if (e.getCode() == KeyCode.SPACE) {
+                toggleDone();
+            } else {
+                return;
+            }
+            e.consume();
+        });
+
+        BorderPane.setMargin(table, new Insets(0, 15, 0, 15));
+        return table;
+    }
+
+    private HBox buildButtonBar() {
+        Button addButton = new Button("Add Task");
+        addButton.getStyleClass().add("add-button");
+        addButton.setOnAction(e -> addTask());
+
+        Button editButton = new Button("Edit");
+        editButton.setOnAction(e -> editTask());
+
+        doneButton.setOnAction(e -> toggleDone());
+
+        Button deleteButton = new Button("Delete");
+        deleteButton.getStyleClass().add("delete-button");
+        deleteButton.setOnAction(e -> deleteTask());
+
+        // these only make sense when a row is selected
+        editButton.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        doneButton.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+        deleteButton.disableProperty().bind(table.getSelectionModel().selectedItemProperty().isNull());
+
+        addButton.setTooltip(new Tooltip("Ctrl+N"));
+        editButton.setTooltip(new Tooltip("Ctrl+E, or Enter in the list"));
+        doneButton.setTooltip(new Tooltip("Ctrl+D, or Space in the list"));
+        deleteButton.setTooltip(new Tooltip("Delete key in the list"));
+        undoButton.setTooltip(new Tooltip("Ctrl+Z"));
+
+        undoButton.setOnAction(e -> undoDelete());
+        undoButton.setVisible(false);
+        undoButton.managedProperty().bind(undoButton.visibleProperty());
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox header = new HBox(20, new VBox(6, heading, description), spacer, create);
-        header.setAlignment(Pos.CENTER_LEFT);
-        search.setPromptText("Search titles and notes");
-        search.setId("task-search");
-        search.setAccessibleText("Search tasks");
-        search.textProperty().addListener((observable, oldValue, newValue) -> render());
-        Button refresh = new Button("Refresh");
-        refresh.setId("refresh-tasks");
-        refresh.setOnAction(event -> refresh());
-        refresh.disableProperty().bind(busy);
-        HBox searchBar = new HBox(10, search, refresh);
-        HBox.setHgrow(search, Priority.ALWAYS);
-        feedback.getStyleClass().add("muted");
-        feedback.setId("browser-feedback");
-        feedback.setWrapText(true);
-        taskList.setCellFactory(list -> new TaskCell());
-        taskList.setId("task-list");
-        taskList.setAccessibleText("Tasks");
-        taskList.disableProperty().bind(busy);
-        VBox content = new VBox(20, header, searchBar, feedback, taskList);
-        content.getStyleClass().add("main-content");
-        VBox.setVgrow(taskList, Priority.ALWAYS);
-        setCenter(content);
-        render();
-        refresh();
+
+        HBox bar = new HBox(10, addButton, editButton, doneButton, deleteButton, spacer, statusLabel, undoButton);
+        bar.setAlignment(Pos.CENTER_LEFT);
+        bar.setPadding(new Insets(10, 15, 15, 15));
+        return bar;
     }
 
-    private VBox sidebar() {
-        Label brand = new Label("Daymark");
-        brand.getStyleClass().add("brand");
-        Label plan = new Label("PLAN");
-        plan.getStyleClass().add("section-label");
-        VBox sidebar = new VBox(12, brand, plan);
-        sidebar.getStyleClass().add("sidebar");
-        sidebar.setPrefWidth(190);
-        ToggleGroup navigation = new ToggleGroup();
-        for (TaskView view : TaskView.values()) {
-            ToggleButton button = new ToggleButton(view.title());
-            button.setId("view-" + view.name().toLowerCase(java.util.Locale.ROOT));
-            button.getStyleClass().add("nav-button");
-            button.setMaxWidth(Double.MAX_VALUE);
-            button.setToggleGroup(navigation);
-            button.setSelected(view == currentView);
-            button.setOnAction(event -> {
-                button.setSelected(true);
-                currentView = view;
-                render();
-            });
-            sidebar.getChildren().add(button);
-        }
-        return sidebar;
+    // reload everything from the db after every change, simpler than keeping the list in sync
+    private void loadTasks() {
+        allTasks.setAll(service.getAllTasks());
+        refreshTable();
     }
 
-    public void refresh() {
-        if (busy.get() || closed) return;
-        feedback.setText("Loading tasks...");
-        loadFailed = false;
-        render();
-        perform(service::findAll, loaded -> {
-            tasks = loaded;
-            this.loaded = true;
-            feedback.setText("");
-            render();
-        }, failure -> {
-            loadFailed = true;
-            feedback.setText("Couldn't load tasks. Use Refresh to try again."
-                    + (this.loaded ? " Showing the last loaded tasks." : ""));
-            render();
-        });
-    }
+    private void refreshTable() {
+        String view = viewBox.getValue();
+        String priority = priorityBox.getValue();
+        String search = searchField.getText().trim().toLowerCase();
 
-    private void render() {
-        heading.setText(currentView.title());
-        description.setText(currentView.description());
-        taskList.getItems().setAll(TaskBrowserModel.filter(tasks, currentView, search.getText(), LocalDate.now(clock)));
-        boolean searching = !search.getText().isBlank();
-        String emptyTitle = searching ? "No matching tasks" : currentView.emptyTitle();
-        String emptyHint = searching ? "Try a different search or choose another view." : currentView.emptyDescription();
-        // A database error isn't evidence that the user has no tasks.
-        if (loadFailed) {
-            emptyTitle = "Tasks couldn't be loaded";
-            emptyHint = "Use Refresh to try again.";
-        } else if (!loaded) {
-            emptyTitle = "Loading tasks...";
-            emptyHint = "Your tasks will appear here shortly.";
-        }
-        Label title = new Label(emptyTitle);
-        title.getStyleClass().add("empty-title");
-        Label hint = new Label(emptyHint);
-        hint.getStyleClass().add("muted");
-        hint.setWrapText(true);
-        VBox empty = new VBox(8, title, hint);
-        empty.setAlignment(Pos.CENTER);
-        taskList.setPlaceholder(empty);
-    }
-
-    private void edit(Task task) {
-        if (busy.get()) return;
-        TaskEditor editor = new TaskEditor(getScene().getWindow(), task, form -> {
-            // Read controls on the FX thread before handing the values to the database worker.
-            String title = form.taskTitle();
-            String notes = form.description();
-            LocalDate due = form.dueDate();
-            com.daymark.domain.Priority priority = form.priority();
-            perform(() -> task == null ? service.createTask(title, notes, due, priority)
-                            : service.updateTask(task.id(), title, notes, due, priority),
-                    saved -> {
-                        replace(saved);
-                        form.close();
-                    }, failure -> form.showError(messageFor(failure)));
-        });
-        editor.getDialogPane().disableProperty().bind(busy);
-        editor.setOnHidden(event -> editor.getDialogPane().disableProperty().unbind());
-        editor.show();
-    }
-
-    private void changeStatus(Task task) {
-        perform(() -> task.status() == TaskStatus.ACTIVE ? service.completeTask(task.id()) : service.reopenTask(task.id()),
-                this::replace, failure -> {
-                    Alert alert = new Alert(Alert.AlertType.ERROR, messageFor(failure), ButtonType.OK);
-                    alert.initOwner(getScene().getWindow());
-                    alert.setHeaderText("The task couldn't be updated");
-                    alert.showAndWait();
-                });
-    }
-
-    private void replace(Task saved) {
-        // Only change the visible list after the save succeeds.
-        var updated = new java.util.ArrayList<>(tasks);
-        updated.removeIf(task -> task.id().equals(saved.id()));
-        updated.add(saved);
-        tasks = List.copyOf(updated);
-        loaded = true;
-        boolean visible = !TaskBrowserModel.filter(List.of(saved), currentView, search.getText(), LocalDate.now(clock)).isEmpty();
-        feedback.setText(visible ? "Task saved." : "Task saved. It's outside this view or search; you can find it in All Tasks.");
-        render();
-    }
-
-    private String messageFor(Throwable failure) {
-        if (failure instanceof TaskValidationException) return failure.getMessage();
-        if (failure instanceof TaskNotFoundException) return "This task no longer exists. Close the form and refresh the list.";
-        return "Couldn't save your task. Please try again. Your changes have not been saved.";
-    }
-
-    private <T> void perform(Supplier<T> work, Consumer<T> success, Consumer<Throwable> failure) {
-        if (busy.get() || closed) return;
-        busy.set(true);
-        // SQLite can wait for a lock. Keep that wait off the thread that draws the window.
-        worker.submit(() -> {
-            try {
-                T result = work.get();
-                Platform.runLater(() -> {
-                    if (closed) return;
-                    busy.set(false);
-                    success.accept(result);
-                });
-            } catch (RuntimeException exception) {
-                if (!(exception instanceof TaskValidationException)) {
-                    LOGGER.log(System.Logger.Level.ERROR, "Task operation failed", exception);
+        List<Task> visible = new ArrayList<>();
+        for (Task task : allTasks) {
+            if (view.equals("Today")) {
+                if (task.done() || task.dueDate() == null || task.dueDate().isAfter(LocalDate.now())) {
+                    continue;
                 }
-                Platform.runLater(() -> {
-                    if (closed) return;
-                    busy.set(false);
-                    failure.accept(exception);
-                });
+            } else if (view.equals("Completed")) {
+                if (!task.done()) {
+                    continue;
+                }
             }
+
+            if (!priority.equals("All") && !task.priority().toString().equals(priority)) {
+                continue;
+            }
+
+            if (!search.isEmpty()) {
+                boolean inTitle = task.title().toLowerCase().contains(search);
+                boolean inDesc = task.description() != null
+                        && task.description().toLowerCase().contains(search);
+                if (!inTitle && !inDesc) {
+                    continue;
+                }
+            }
+
+            visible.add(task);
+        }
+
+        // tasks with a due date first, soonest at the top
+        // TODO sort by priority too
+        visible.sort((a, b) -> {
+            if (a.dueDate() == null && b.dueDate() == null) {
+                return 0;
+            }
+            if (a.dueDate() == null) {
+                return 1;
+            }
+            if (b.dueDate() == null) {
+                return -1;
+            }
+            return a.dueDate().compareTo(b.dueDate());
         });
+
+        table.getItems().setAll(visible);
     }
 
-    @Override
-    public void close() {
-        closed = true;
-        worker.shutdown();
-    }
-
-    public boolean requestClose() {
-        // Let an in-flight save finish before JavaFX shuts down its worker.
-        if (busy.get()) {
-            feedback.setText("Please wait for the current task operation to finish, then close the window.");
-            return false;
+    private void quickAdd() {
+        String text = quickAddField.getText();
+        if (text.trim().isEmpty()) {
+            return;
         }
-        return true;
+        try {
+            Task created = service.quickAdd(text);
+            quickAddField.clear();
+            showStatus("Added \"" + created.title() + "\"");
+        } catch (IllegalArgumentException ex) {
+            showError(ex.getMessage());
+        }
+        loadTasks();
     }
 
-    private final class TaskCell extends ListCell<Task> {
-        @Override
-        protected void updateItem(Task task, boolean empty) {
-            super.updateItem(task, empty);
-            // JavaFX reuses cells while scrolling, including cells that used to hold another task.
-            setText(null);
-            setGraphic(null);
-            if (empty || task == null) return;
-            Label title = new Label(task.title());
-            title.getStyleClass().add("task-title");
-            title.setWrapText(true);
-            Label details = new Label(task.priority() + " priority" + dueText(task));
-            details.getStyleClass().add("muted");
-            details.setWrapText(true);
-            VBox words = new VBox(6, title, details);
-            if (task.description() != null) {
-                Label notes = new Label(task.description());
-                notes.getStyleClass().add("muted");
-                notes.setWrapText(true);
-                words.getChildren().add(notes);
+    private void addTask() {
+        TaskEditor editor = new TaskEditor(null);
+        Theme.apply(editor);
+        Optional<Task> result = editor.showAndWait();
+        if (result.isPresent()) {
+            Task t = result.get();
+            try {
+                service.createTask(t.title(), t.description(), t.dueDate(), t.priority(), t.recurrence());
+            } catch (IllegalArgumentException ex) {
+                showError(ex.getMessage());
             }
-            words.setMinWidth(0);
-            HBox.setHgrow(words, Priority.ALWAYS);
-            Button edit = new Button("Edit");
-            edit.setId("edit-" + task.id());
-            edit.setAccessibleText("Edit " + task.title());
-            edit.setOnAction(event -> edit(task));
-            Button status = new Button(task.status() == TaskStatus.ACTIVE ? "Done" : "Reopen");
-            status.setId("status-" + task.id());
-            status.setAccessibleText(status.getText() + ": " + task.title());
-            status.setOnAction(event -> changeStatus(task));
-            HBox row = new HBox(12, words, edit, status);
-            row.setAlignment(Pos.CENTER_LEFT);
-            row.getStyleClass().add("task-card");
-            row.prefWidthProperty().bind(taskList.widthProperty().subtract(40));
-            setGraphic(row);
+            loadTasks();
         }
+    }
 
-        private String dueText(Task task) {
-            if (task.status() == TaskStatus.COMPLETED) return "  ·  Completed";
-            if (task.dueDate() == null) return "  ·  No due date";
-            LocalDate today = LocalDate.now(clock);
-            if (task.dueDate().isEqual(today)) return "  ·  Due today";
-            return "  ·  " + (task.dueDate().isBefore(today) ? "Overdue: " : "Due ") + DATE.format(task.dueDate());
+    private void editTask() {
+        Task selected = table.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            return;
         }
+        TaskEditor editor = new TaskEditor(selected);
+        Theme.apply(editor);
+        Optional<Task> result = editor.showAndWait();
+        if (result.isPresent()) {
+            try {
+                service.updateTask(result.get());
+            } catch (IllegalArgumentException ex) {
+                showError(ex.getMessage());
+            }
+            loadTasks();
+        }
+    }
+
+    private void toggleDone() {
+        Task selected = table.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            return;
+        }
+        if (selected.done()) {
+            service.markUndone(selected.id());
+        } else {
+            service.markDone(selected.id());
+            if (selected.recurrence() != Recurrence.NONE) {
+                showStatus("Done - the next \"" + selected.title() + "\" has been added");
+            }
+        }
+        loadTasks();
+    }
+
+    private void deleteTask() {
+        Task selected = table.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            return;
+        }
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+        confirm.setTitle("Delete Task");
+        confirm.setHeaderText("Delete \"" + selected.title() + "\"?");
+        Theme.apply(confirm);
+        Optional<ButtonType> result = confirm.showAndWait();
+        if (result.isPresent() && result.get() == ButtonType.OK) {
+            service.deleteTask(selected.id());
+            loadTasks();
+            showStatus("Deleted \"" + selected.title() + "\"");
+            undoButton.setVisible(true);
+        }
+    }
+
+    private void undoDelete() {
+        Task restored = service.undoDelete();
+        if (restored == null) {
+            return;
+        }
+        loadTasks();
+        showStatus("Restored \"" + restored.title() + "\"");
+    }
+
+    // ---- import / export ----
+    // The choose... methods just ask for a file. The methods that take a File do the
+    // work, which keeps them testable without a file dialog.
+
+    private void chooseImportCsv() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Import tasks from CSV");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV files", "*.csv"));
+        File file = chooser.showOpenDialog(getScene().getWindow());
+        if (file != null) {
+            importCsv(file);
+        }
+    }
+
+    private void chooseExportCsv() {
+        File file = chooseSaveFile("Export tasks to CSV", "daymark-tasks.csv", "CSV files", "*.csv");
+        if (file != null) {
+            exportCsv(file);
+        }
+    }
+
+    private void chooseExportIcs() {
+        File file = chooseSaveFile("Export tasks to a calendar file", "daymark-tasks.ics", "Calendar files", "*.ics");
+        if (file != null) {
+            exportIcs(file);
+        }
+    }
+
+    private File chooseSaveFile(String title, String fileName, String description, String extension) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle(title);
+        chooser.setInitialFileName(fileName);
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(description, extension));
+        return chooser.showSaveDialog(getScene().getWindow());
+    }
+
+    void importCsv(File file) {
+        try {
+            List<Task> tasks = CsvTasks.fromCsv(Files.readString(file.toPath(), StandardCharsets.UTF_8));
+            int imported = service.importTasks(tasks);
+            loadTasks();
+            int skipped = tasks.size() - imported;
+            if (skipped == 0) {
+                showStatus("Imported " + imported + " tasks");
+            } else {
+                showStatus("Imported " + imported + " tasks, skipped " + skipped + " with a missing or too long title");
+            }
+        } catch (IOException ex) {
+            showError("Could not read " + file.getName() + ": " + ex.getMessage());
+        } catch (IllegalArgumentException ex) {
+            showError(ex.getMessage());
+        }
+    }
+
+    void exportCsv(File file) {
+        try {
+            Files.writeString(file.toPath(), CsvTasks.toCsv(allTasks), StandardCharsets.UTF_8);
+            showStatus("Exported " + allTasks.size() + " tasks to " + file.getName());
+        } catch (IOException ex) {
+            showError("Could not write " + file.getName() + ": " + ex.getMessage());
+        }
+    }
+
+    void exportIcs(File file) {
+        try {
+            int exported = IcsExporter.exportable(allTasks).size();
+            Files.writeString(file.toPath(), IcsExporter.toIcs(allTasks, Instant.now()), StandardCharsets.UTF_8);
+            showStatus("Exported " + exported + " unfinished tasks with due dates to " + file.getName());
+        } catch (IOException ex) {
+            showError("Could not write " + file.getName() + ": " + ex.getMessage());
+        }
+    }
+
+    private void showShortcuts() {
+        Alert help = new Alert(Alert.AlertType.INFORMATION);
+        help.setTitle("Keyboard Shortcuts");
+        help.setHeaderText("Keyboard shortcuts");
+        // two columns: the keys on the left, what they do on the right
+        String[][] rows = {
+                {"Ctrl+N", "New task"},
+                {"Ctrl+L", "Quick add (type a task, press Enter)"},
+                {"Ctrl+E", "Edit the selected task"},
+                {"Ctrl+D", "Mark the selected task done / undone"},
+                {"Ctrl+Z", "Undo the last delete"},
+                {"Ctrl+F", "Search (Esc clears it)"},
+                {"Ctrl+1 / 2 / 3", "Today / All Tasks / Completed"},
+                {"Ctrl+Shift+D", "Dark mode on / off"},
+                {"Ctrl+I", "Import CSV"},
+                {"Ctrl+S", "Export CSV"},
+                {"Ctrl+Shift+S", "Export calendar (.ics)"},
+                {"F1", "This list"},
+                {"", ""},
+                {"In the task list:", ""},
+                {"Up / Down", "Move between tasks"},
+                {"Enter", "Edit"},
+                {"Space", "Mark done / undone"},
+                {"Delete", "Delete"},
+                {"", ""},
+                {"On a Mac use Cmd instead of Ctrl.", ""},
+        };
+        GridPane grid = new GridPane();
+        grid.setHgap(24);
+        grid.setVgap(5);
+        grid.setPadding(new Insets(15));
+        for (int row = 0; row < rows.length; row++) {
+            Label keys = new Label(rows[row][0]);
+            if (rows[row][1].isEmpty()) {
+                // a note or heading, let it use the full width
+                grid.add(keys, 0, row, 2, 1);
+            } else {
+                keys.getStyleClass().add("shortcut-keys");
+                grid.add(keys, 0, row);
+                grid.add(new Label(rows[row][1]), 1, row);
+            }
+        }
+        help.getDialogPane().setContent(grid);
+        Theme.apply(help);
+        help.showAndWait();
+    }
+
+    // a new message replaces the old one, and only a delete shows the Undo button
+    private void showStatus(String message) {
+        statusLabel.setText(message);
+        undoButton.setVisible(false);
+    }
+
+    private void showError(String message) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle("Error");
+        alert.setHeaderText(null);
+        alert.setContentText(message);
+        Theme.apply(alert);
+        alert.showAndWait();
     }
 }

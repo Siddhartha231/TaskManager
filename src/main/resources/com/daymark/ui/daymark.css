@@ -1,43 +1,409 @@
+/*
+ * Daymark theme.
+ *
+ * All the colors are defined once as variables at the top (light theme), and the
+ * .dark block underneath overrides just those variables. Everything below that uses
+ * the variables, so no other rule needs to know which theme is on.
+ */
+
 .root {
-    -daymark-background: #f7f6f2;
-    -daymark-surface: #ffffff;
-    -daymark-text: #17202a;
-    -daymark-muted: #657181;
-    -daymark-accent: #316b60;
-    -fx-font-family: "Segoe UI", "Inter", sans-serif;
-    -fx-font-size: 14px;
-}
-.app-root {
-    -fx-background-color: -daymark-background;
+    -dm-bg: #f6f7f9;            /* window background */
+    -dm-surface: #ffffff;       /* cards, inputs, table rows */
+    -dm-surface-alt: #f1f3f6;   /* table header, hovered rows */
+    -dm-border: #dfe2e8;
+    -dm-text: #1f2328;
+    -dm-muted: #6b7280;         /* secondary text, hints */
+    -dm-accent: #4f46e5;        /* primary button, focus ring */
+    -dm-accent-hover: #4338ca;
+    -dm-accent-soft: #e4e7ff;   /* selected row */
+    -dm-danger: #dc2626;
+    -dm-danger-hover: #b91c1c;
+    -dm-overdue: #d92d20;
+
+    /* these are the colors JavaFX's built-in theme derives everything else from,
+       so pointing them at ours restyles the controls we don't style by hand */
+    -fx-base: #eceef2;
+    -fx-background: -dm-bg;
+    -fx-control-inner-background: -dm-surface;
+    -fx-control-inner-background-alt: -dm-surface;
+    -fx-accent: -dm-accent;
+    -fx-focus-color: -dm-accent;
+    -fx-faint-focus-color: transparent;
+
+    -fx-font-family: "Segoe UI", "Helvetica Neue", "Inter", Arial, sans-serif;
+    -fx-font-size: 13px;
+    -fx-background-color: -dm-bg;
 }
 
-.page-title {
-    -fx-text-fill: -daymark-text;
-    -fx-font-size: 30px;
+.dark {
+    -dm-bg: #16181d;
+    -dm-surface: #1f2229;
+    -dm-surface-alt: #272b34;
+    -dm-border: #343943;
+    -dm-text: #e6e8eb;
+    -dm-muted: #9aa1ac;
+    -dm-accent: #6366f1;
+    -dm-accent-hover: #818cf8;
+    -dm-accent-soft: #2f3260;
+    -dm-danger: #ef4444;
+    -dm-danger-hover: #f87171;
+    -dm-overdue: #f87171;
+
+    -fx-base: #2a2e37;
+}
+
+/* ---------- text ---------- */
+
+.label {
+    -fx-text-fill: -dm-text;
+}
+
+.app-title {
+    -fx-font-size: 24px;
     -fx-font-weight: bold;
 }
 
-.sidebar { -fx-background-color: #edeae3; -fx-padding: 32 18; }
-.brand { -fx-font-size: 25px; -fx-font-weight: bold; -fx-text-fill: -daymark-accent; -fx-padding: 0 0 32 0; }
-.section-label { -fx-text-fill: -daymark-muted; -fx-font-size: 11px; -fx-font-weight: bold; }
-.nav-button { -fx-background-color: transparent; -fx-alignment: center-left; -fx-padding: 12 14; }
-.nav-button:selected { -fx-background-color: #d7e6df; -fx-text-fill: #204f46; }
-.main-content { -fx-padding: 32; }
-.muted { -fx-text-fill: -daymark-muted; -fx-font-size: 13px; }
-.button, .toggle-button { -fx-cursor: hand; -fx-background-radius: 7; -fx-padding: 9 14; }
-.button { -fx-background-color: #e8ece9; -fx-text-fill: -daymark-text; }
-.button:hover { -fx-background-color: #d7e6df; }
-.primary-button { -fx-background-color: -daymark-accent; -fx-text-fill: white; }
-.primary-button:hover { -fx-background-color: #245449; }
-.button, .toggle-button { -fx-border-color: transparent; -fx-border-radius: 7; }
-.button:focused, .toggle-button:focused { -fx-border-color: -daymark-accent; }
-.text-field, .text-area, .combo-box, .date-picker { -fx-font-size: 14px; }
-.text-field { -fx-padding: 10; }
-.list-view { -fx-background-color: transparent; -fx-padding: 0; }
-.list-view .list-cell { -fx-background-color: transparent; -fx-padding: 0 0 12 0; }
-.list-cell:selected .task-card { -fx-border-color: -daymark-accent; }
-.task-card { -fx-background-color: white; -fx-background-radius: 10; -fx-padding: 18;
-    -fx-border-color: #e4e6e1; -fx-border-radius: 10; }
-.task-title { -fx-text-fill: -daymark-text; -fx-font-weight: bold; -fx-font-size: 15px; }
-.empty-title { -fx-font-size: 21px; -fx-text-fill: -daymark-text; }
-.error-text { -fx-text-fill: #a33030; }
+/* the key names in the Help > Keyboard Shortcuts list */
+.shortcut-keys {
+    -fx-font-weight: bold;
+}
+
+.status-label {
+    -fx-text-fill: -dm-muted;
+}
+
+/* ---------- menu bar ---------- */
+
+.menu-bar {
+    -fx-background-color: -dm-surface;
+    -fx-border-color: -dm-border;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 2 6;
+}
+
+.menu-bar .menu .label {
+    -fx-text-fill: -dm-text;
+}
+
+.menu-bar .menu:hover,
+.menu-bar .menu:showing {
+    -fx-background-color: -dm-surface-alt;
+    -fx-background-radius: 4;
+}
+
+.context-menu {
+    -fx-background-color: -dm-surface;
+    -fx-border-color: -dm-border;
+    -fx-padding: 4;
+}
+
+.menu-item {
+    -fx-padding: 6 12;
+    -fx-background-radius: 4;
+}
+
+.menu-item .label,
+.menu-item .accelerator-text {
+    -fx-text-fill: -dm-text;
+}
+
+.menu-item .accelerator-text {
+    -fx-opacity: 0.6;
+}
+
+.menu-item:focused {
+    -fx-background-color: -dm-accent;
+}
+
+.menu-item:focused .label,
+.menu-item:focused .accelerator-text {
+    -fx-text-fill: white;
+}
+
+.menu-item:disabled .label {
+    -fx-opacity: 0.45;
+}
+
+.separator .line {
+    -fx-border-color: -dm-border;
+    -fx-border-width: 1 0 0 0;
+}
+
+/* ---------- inputs ---------- */
+
+.text-field,
+.text-area,
+.combo-box,
+.date-picker .text-field {
+    -fx-background-color: -dm-border, -dm-surface;
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 6, 5;
+    -fx-text-fill: -dm-text;
+    -fx-prompt-text-fill: -dm-muted;
+}
+
+.text-field {
+    -fx-padding: 7 10;
+}
+
+.text-field:focused,
+.text-area:focused,
+.combo-box:focused {
+    -fx-background-color: -dm-accent, -dm-surface;
+    -fx-background-insets: 0, 1.5;
+}
+
+/* the quick add box has focus when the app opens, and JavaFX hides the hint of a
+   focused box - keep it visible until something is typed */
+.quick-add,
+.quick-add:focused {
+    -fx-prompt-text-fill: -dm-muted;
+    -fx-padding: 9 12;
+    -fx-font-size: 14px;
+}
+
+.text-area .content {
+    -fx-background-color: -dm-surface;
+    -fx-background-radius: 5;
+}
+
+.combo-box .list-cell {
+    -fx-text-fill: -dm-text;
+    -fx-padding: 5 8;
+}
+
+.combo-box .arrow,
+.date-picker .arrow {
+    -fx-background-color: -dm-muted;
+}
+
+.combo-box-popup .list-view {
+    -fx-background-color: -dm-border, -dm-surface;
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 6, 5;
+    -fx-padding: 4;
+}
+
+.combo-box-popup .list-view .list-cell {
+    -fx-background-color: -dm-surface;
+    -fx-text-fill: -dm-text;
+    -fx-background-radius: 4;
+    -fx-padding: 6 10;
+}
+
+.combo-box-popup .list-view .list-cell:hover {
+    -fx-background-color: -dm-surface-alt;
+}
+
+.combo-box-popup .list-view .list-cell:selected {
+    -fx-background-color: -dm-accent;
+    -fx-text-fill: white;
+}
+
+.date-picker .arrow-button {
+    -fx-background-color: -dm-border, -dm-surface-alt;
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 0 6 6 0, 0 5 5 0;
+}
+
+.date-picker .text-field {
+    -fx-background-radius: 6 0 0 6, 5 0 0 5;
+}
+
+/* ---------- buttons ---------- */
+
+.button {
+    -fx-background-color: -dm-border, -dm-surface;
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 6, 5;
+    -fx-text-fill: -dm-text;
+    -fx-padding: 7 16;
+    -fx-cursor: hand;
+}
+
+.button:hover {
+    -fx-background-color: -dm-border, -dm-surface-alt;
+}
+
+.button:focused {
+    -fx-background-color: -dm-accent, -dm-surface;
+    -fx-background-insets: 0, 1.5;
+}
+
+.button:disabled {
+    -fx-opacity: 0.45;
+}
+
+/* the main action */
+.add-button,
+.add-button:focused {
+    -fx-background-color: -dm-accent;
+    -fx-background-insets: 0;
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+}
+
+.add-button:hover {
+    -fx-background-color: -dm-accent-hover;
+}
+
+/* destructive: red text until you hover, then it fills in */
+.delete-button {
+    -fx-text-fill: -dm-danger;
+}
+
+.delete-button:hover {
+    -fx-background-color: -dm-danger;
+    -fx-background-insets: 0;
+    -fx-text-fill: white;
+}
+
+/* ---------- task table ---------- */
+
+.table-view {
+    -fx-background-color: -dm-border, -dm-surface;
+    -fx-background-insets: 0, 1;
+    -fx-background-radius: 8, 7;
+    -fx-padding: 1;
+}
+
+.table-view:focused {
+    -fx-background-color: -dm-border, -dm-surface;
+}
+
+.table-view .column-header-background {
+    -fx-background-color: -dm-surface-alt;
+    -fx-background-radius: 7 7 0 0;
+}
+
+.table-view .column-header,
+.table-view .filler {
+    -fx-background-color: transparent;
+    -fx-border-color: -dm-border;
+    -fx-border-width: 0 0 1 0;
+    -fx-size: 34;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: -dm-muted;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+    -fx-alignment: center-left;
+    -fx-padding: 0 10;
+}
+
+.table-row-cell {
+    -fx-background-color: -dm-border, -dm-surface;
+    -fx-background-insets: 0, 0 0 1 0;
+    -fx-cell-size: 36;
+}
+
+.table-row-cell:empty {
+    -fx-background-color: -dm-surface;
+}
+
+.table-row-cell:filled:hover {
+    -fx-background-color: -dm-border, -dm-surface-alt;
+}
+
+.table-row-cell:filled:selected,
+.table-view:focused .table-row-cell:filled:selected {
+    -fx-background-color: -dm-border, -dm-accent-soft;
+}
+
+.table-cell {
+    -fx-text-fill: -dm-text;
+    -fx-border-color: transparent;
+    -fx-padding: 0 10;
+    -fx-alignment: center-left;
+}
+
+.table-row-cell:selected .table-cell {
+    -fx-text-fill: -dm-text;
+}
+
+.table-row-cell.overdue .table-cell,
+.table-row-cell.overdue:selected .table-cell {
+    -fx-text-fill: -dm-overdue;
+}
+
+.table-view .placeholder .label {
+    -fx-text-fill: -dm-muted;
+}
+
+/* ---------- scroll bars ---------- */
+
+.scroll-bar {
+    -fx-background-color: transparent;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: -dm-border;
+    -fx-background-radius: 6;
+    -fx-background-insets: 2;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: -dm-muted;
+}
+
+.scroll-bar .track,
+.scroll-bar .increment-button,
+.scroll-bar .decrement-button {
+    -fx-background-color: transparent;
+    -fx-padding: 0 4 0 4;
+}
+
+.scroll-bar .increment-arrow,
+.scroll-bar .decrement-arrow {
+    -fx-shape: " ";
+    -fx-padding: 0;
+}
+
+.corner {
+    -fx-background-color: transparent;
+}
+
+/* ---------- dialogs and tooltips ---------- */
+
+.dialog-pane {
+    -fx-background-color: -dm-bg;
+}
+
+.dialog-pane > .header-panel {
+    -fx-background-color: -dm-surface;
+    -fx-border-color: -dm-border;
+    -fx-border-width: 0 0 1 0;
+}
+
+.dialog-pane > .header-panel .label {
+    -fx-font-size: 16px;
+    -fx-font-weight: bold;
+}
+
+.dialog-pane > .content.label {
+    -fx-text-fill: -dm-text;
+}
+
+.dialog-pane > .button-bar > .container {
+    -fx-background-color: -dm-bg;
+}
+
+/* OK is the default button in every dialog */
+.dialog-pane .button:default {
+    -fx-background-color: -dm-accent;
+    -fx-background-insets: 0;
+    -fx-text-fill: white;
+}
+
+.dialog-pane .button:default:hover {
+    -fx-background-color: -dm-accent-hover;
+}
+
+.tooltip {
+    -fx-background-color: -dm-text;
+    -fx-text-fill: -dm-bg;
+    -fx-background-radius: 5;
+    -fx-padding: 5 9;
+    -fx-font-size: 12px;
+}

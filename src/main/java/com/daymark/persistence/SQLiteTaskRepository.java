@@ -1,143 +1,177 @@
 package com.daymark.persistence;
 
 import com.daymark.domain.Priority;
+import com.daymark.domain.Recurrence;
 import com.daymark.domain.Task;
-import com.daymark.domain.TaskStatus;
-import com.daymark.repository.TaskRepository;
 
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Types;
-import java.time.Instant;
+import java.sql.Statement;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.UUID;
 
-/** Stores tasks using the schema owned by DatabaseManager. */
-public final class SQLiteTaskRepository implements TaskRepository {
-    private final DatabaseManager database;
+public class SQLiteTaskRepository implements TaskRepository {
 
-    public SQLiteTaskRepository(DatabaseManager database) {
-        this.database = Objects.requireNonNull(database);
+    private final Connection conn;
+
+    public SQLiteTaskRepository(DatabaseManager db) {
+        this.conn = db.getConnection();
     }
 
     @Override
     public Task insert(Task task) {
-        return save(task, """
-                INSERT INTO tasks (title, description, due_date, priority, status,
-                    created_at, updated_at, completed_at, id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """);
-    }
+        String sql = "INSERT INTO tasks (title, description, due_date, priority, done, created_at, recurrence) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        try {
+            PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+            ps.setString(1, task.title());
+            ps.setString(2, task.description());
+            // sqlite has no date type, just store the ISO string
+            ps.setString(3, task.dueDate() == null ? null : task.dueDate().toString());
+            ps.setString(4, task.priority().name());
+            ps.setInt(5, task.done() ? 1 : 0);
+            ps.setString(6, task.createdAt().toString());
+            ps.setString(7, task.recurrence().name());
+            ps.executeUpdate();
 
-    @Override
-    public Task update(Task task) {
-        return save(task, """
-                UPDATE tasks SET title = ?, description = ?, due_date = ?, priority = ?,
-                    status = ?, created_at = ?, updated_at = ?, completed_at = ? WHERE id = ?
-                """);
-    }
-
-    private Task save(Task task, String sql) {
-        Objects.requireNonNull(task);
-        // Each operation owns its connection, so callers don't have to manage JDBC resources.
-        try (var connection = database.openConnection();
-             var statement = connection.prepareStatement(sql)) {
-            // Insert and update use the same parameter order, with the ID last.
-            statement.setString(1, task.title());
-            nullableText(statement, 2, task.description());
-            nullableText(statement, 3, task.dueDate());
-            statement.setString(4, task.priority().name());
-            statement.setString(5, task.status().name());
-            statement.setString(6, task.createdAt().toString());
-            statement.setString(7, task.updatedAt().toString());
-            nullableText(statement, 8, task.completedAt());
-            statement.setString(9, task.id().toString());
-            // A missing update must not look like a successful save to the caller.
-            if (statement.executeUpdate() != 1) {
-                throw new PersistenceException("Task no longer exists: " + task.id());
+            ResultSet keys = ps.getGeneratedKeys();
+            Task saved = task;
+            if (keys.next()) {
+                saved = task.withId(keys.getInt(1));
             }
+            keys.close();
+            ps.close();
+            return saved;
+        } catch (SQLException e) {
+            e.printStackTrace();
             return task;
-        } catch (SQLException exception) {
-            // Keep the original cause for debugging without exposing JDBC to the service layer.
-            throw new PersistenceException("Could not save task " + task.id(), exception);
         }
     }
 
     @Override
-    public Optional<Task> findById(UUID id) {
-        Objects.requireNonNull(id);
-        try (var connection = database.openConnection();
-             var statement = connection.prepareStatement("SELECT * FROM tasks WHERE id = ?")) {
-            statement.setString(1, id.toString());
-            try (var rows = statement.executeQuery()) {
-                // Not finding an ID is a normal lookup result, not a database failure.
-                return rows.next() ? Optional.of(readTask(rows)) : Optional.empty();
+    public void update(Task task) {
+        String sql = "UPDATE tasks SET title = ?, description = ?, due_date = ?, "
+                + "priority = ?, done = ?, recurrence = ? WHERE id = ?";
+        try {
+            PreparedStatement ps = conn.prepareStatement(sql);
+            ps.setString(1, task.title());
+            ps.setString(2, task.description());
+            ps.setString(3, task.dueDate() == null ? null : task.dueDate().toString());
+            ps.setString(4, task.priority().name());
+            ps.setInt(5, task.done() ? 1 : 0);
+            ps.setString(6, task.recurrence().name());
+            ps.setInt(7, task.id());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    @Override
+    public Task findById(int id) {
+        try {
+            PreparedStatement ps = conn.prepareStatement("SELECT * FROM tasks WHERE id = ?");
+            ps.setInt(1, id);
+            ResultSet rs = ps.executeQuery();
+            Task task = null;
+            if (rs.next()) {
+                task = rowToTask(rs);
             }
-        } catch (SQLException exception) {
-            throw new PersistenceException("Could not load task " + id, exception);
+            rs.close();
+            ps.close();
+            return task;
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return null;
         }
     }
 
     @Override
     public List<Task> findAll() {
         List<Task> tasks = new ArrayList<>();
-        // The ID breaks ties when tasks share a creation timestamp.
-        try (var connection = database.openConnection();
-             var statement = connection.prepareStatement("SELECT * FROM tasks ORDER BY created_at, id");
-             var rows = statement.executeQuery()) {
-            while (rows.next()) {
-                tasks.add(readTask(rows));
+        try {
+            Statement stmt = conn.createStatement();
+            ResultSet rs = stmt.executeQuery("SELECT * FROM tasks ORDER BY id");
+            while (rs.next()) {
+                tasks.add(rowToTask(rs));
             }
-            // Return a snapshot; changing this list shouldn't suggest that stored tasks changed.
-            return List.copyOf(tasks);
-        } catch (SQLException exception) {
-            throw new PersistenceException("Could not load tasks", exception);
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
         }
+        return tasks;
     }
 
     @Override
-    public void deleteById(UUID id) {
-        Objects.requireNonNull(id);
-        try (var connection = database.openConnection();
-             var statement = connection.prepareStatement("DELETE FROM tasks WHERE id = ?")) {
-            statement.setString(1, id.toString());
-            // Zero deleted rows is fine: the requested task is already gone.
-            statement.executeUpdate();
-        } catch (SQLException exception) {
-            throw new PersistenceException("Could not delete task " + id, exception);
-        }
-    }
-
-    private Task readTask(ResultSet row) throws SQLException {
+    public void delete(int id) {
         try {
-            String due = row.getString("due_date");
-            String completed = row.getString("completed_at");
-            // These two dates are optional, so only parse them when a value was stored.
-            return new Task(
-                    UUID.fromString(row.getString("id")), row.getString("title"),
-                    row.getString("description"), due == null ? null : LocalDate.parse(due),
-                    Priority.valueOf(row.getString("priority")),
-                    TaskStatus.valueOf(row.getString("status")),
-                    Instant.parse(row.getString("created_at")),
-                    Instant.parse(row.getString("updated_at")),
-                    completed == null ? null : Instant.parse(completed));
-        } catch (IllegalArgumentException | java.time.DateTimeException | NullPointerException exception) {
-            // A bad stored date or enum should be reported as a storage problem too.
-            throw new PersistenceException("Stored task data is invalid", exception);
+            PreparedStatement ps = conn.prepareStatement("DELETE FROM tasks WHERE id = ?");
+            ps.setInt(1, id);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
         }
     }
 
-    private void nullableText(PreparedStatement statement, int index, Object value) throws SQLException {
-        if (value == null) {
-            // Store missing optional values as SQL NULL so they remain null when read back.
-            statement.setNull(index, Types.VARCHAR);
-        } else {
-            statement.setString(index, value.toString());
+    private Task rowToTask(ResultSet rs) throws SQLException {
+        String due = rs.getString("due_date");
+        String created = rs.getString("created_at");
+        return new Task(
+                rs.getInt("id"),
+                rs.getString("title"),
+                rs.getString("description"),
+                parseDueDate(due),
+                Priority.valueOf(rs.getString("priority")),
+                rs.getInt("done") == 1,
+                parseCreatedAt(created),
+                parseRecurrence(rs.getString("recurrence"))
+        );
+    }
+
+    // same idea as the dates below - anything unexpected just means "doesn't repeat"
+    private Recurrence parseRecurrence(String text) {
+        if (text == null) {
+            return Recurrence.NONE;
+        }
+        try {
+            return Recurrence.valueOf(text);
+        } catch (IllegalArgumentException e) {
+            System.out.println("Ignoring unknown recurrence in database: " + text);
+            return Recurrence.NONE;
+        }
+    }
+
+    // If the stored text isn't a real date (file edited by hand, older version, etc.)
+    // load the task without a due date instead of crashing the whole list.
+    private LocalDate parseDueDate(String text) {
+        if (text == null) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(text);
+        } catch (DateTimeParseException e) {
+            System.out.println("Ignoring malformed due date in database: " + text);
+            return null;
+        }
+    }
+
+    private LocalDateTime parseCreatedAt(String text) {
+        if (text == null) {
+            return LocalDateTime.now();
+        }
+        try {
+            return LocalDateTime.parse(text);
+        } catch (DateTimeParseException e) {
+            System.out.println("Ignoring malformed created date in database: " + text);
+            return LocalDateTime.now();
         }
     }
 }

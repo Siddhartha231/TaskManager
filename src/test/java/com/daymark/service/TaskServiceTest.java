@@ -1,111 +1,204 @@
 package com.daymark.service;
 
 import com.daymark.domain.Priority;
+import com.daymark.domain.Recurrence;
 import com.daymark.domain.Task;
-import com.daymark.domain.TaskStatus;
-import com.daymark.persistence.PersistenceException;
-import com.daymark.repository.TaskRepository;
+import com.daymark.persistence.InMemoryTaskRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
-import java.util.ArrayList;
+import java.time.ZoneId;
 import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class TaskServiceTest {
-    private static final Instant NOW = Instant.parse("2026-09-05T12:00:00Z");
-    private final RecordingRepository repository = new RecordingRepository();
-    private final TaskService service = new TaskService(repository, Clock.fixed(NOW, ZoneOffset.UTC));
 
-    @Test
-    void createsAnActiveTaskWithNormalizedInput() {
-        Task task = service.createTask("  Read chapter two  ", "  Take notes  ", null, Priority.MEDIUM);
-        assertEquals("Read chapter two", task.title());
-        assertEquals("Take notes", task.description());
-        assertEquals(Priority.MEDIUM, task.priority());
-        assertEquals(TaskStatus.ACTIVE, task.status());
-        assertEquals(NOW, task.createdAt());
-        assertEquals(NOW, task.updatedAt());
-        assertNull(task.completedAt());
-        assertNull(task.dueDate());
-        assertNotNull(task.id());
-        assertEquals(List.of(task), repository.saved);
+    private TaskService service;
+
+    // Wednesday March 12 2025 - the service gets a clock stuck on this day, so tests
+    // about "today" and "this Friday" give the same answer no matter when they run
+    private static final LocalDate TODAY = LocalDate.of(2025, 3, 12);
+
+    // the service only needs a TaskRepository, so these tests don't touch a database at all
+    @BeforeEach
+    void setUp() {
+        Clock fixedClock = Clock.fixed(
+                TODAY.atTime(10, 0).atZone(ZoneId.systemDefault()).toInstant(), ZoneId.systemDefault());
+        service = new TaskService(new InMemoryTaskRepository(), fixedClock);
     }
 
     @Test
-    void normalizesMissingNotesAndGeneratesSeparateIds() {
-        Task first = service.createTask("First", null, null, Priority.LOW);
-        Task second = service.createTask("Second", " \t\n", null, Priority.LOW);
-        assertNull(first.description());
-        assertNull(second.description());
-        assertNotEquals(first.id(), second.id());
+    void testEmptyTitleThrows() {
+        assertThrows(IllegalArgumentException.class,
+                () -> service.createTask("", null, null, Priority.LOW));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.createTask("   ", null, null, Priority.LOW));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.createTask(null, null, null, Priority.LOW));
     }
 
     @Test
-    void acceptsLengthLimitsAfterTrimming() {
-        // Padding is removed before checking the limits on what actually gets stored.
-        Task task = service.createTask(" " + "a".repeat(100) + " ",
-                " " + "b".repeat(500) + " ", null, Priority.HIGH);
-        assertEquals(100, task.title().length());
-        assertEquals(500, task.description().length());
+    void testTitleTooLong() {
+        String longTitle = "a".repeat(101);
+        assertThrows(IllegalArgumentException.class,
+                () -> service.createTask(longTitle, null, null, Priority.LOW));
     }
 
     @Test
-    void rejectsInvalidTitlesWithoutSavingAnything() {
-        for (String title : new String[]{null, "", " \t\n", "a".repeat(101)}) {
-            assertThrows(TaskValidationException.class,
-                    () -> service.createTask(title, null, null, Priority.LOW));
-        }
-        assertTrue(repository.saved.isEmpty());
+    void testTitleTrimmed() {
+        Task task = service.createTask("  Finish lab 4  ", "  notes  ", null, Priority.HIGH);
+        assertEquals("Finish lab 4", task.title());
+        assertEquals("notes", task.description());
     }
 
     @Test
-    void rejectsLongNotesAndMissingPriorityWithoutSavingAnything() {
-        assertThrows(TaskValidationException.class,
-                () -> service.createTask("Title", "b".repeat(501), null, Priority.LOW));
-        assertThrows(TaskValidationException.class,
-                () -> service.createTask("Title", null, null, null));
-        assertTrue(repository.saved.isEmpty());
+    void testBlankDescriptionBecomesNull() {
+        Task task = service.createTask("Buy groceries", "   ", null, Priority.LOW);
+        assertNull(task.description());
     }
 
     @Test
-    void preservesPastPresentAndFutureDueDates() {
-        for (LocalDate due : List.of(LocalDate.of(2020, 1, 1),
-                LocalDate.of(2026, 9, 5), LocalDate.of(2030, 1, 1))) {
-            assertEquals(due, service.createTask("Title", null, due, Priority.LOW).dueDate());
-        }
+    void testMarkDoneAndUndone() {
+        Task task = service.createTask("Study for midterm", null, null, Priority.MEDIUM);
+        assertFalse(task.done());
+
+        service.markDone(task.id());
+        assertTrue(service.getAllTasks().get(0).done());
+
+        service.markUndone(task.id());
+        assertFalse(service.getAllTasks().get(0).done());
     }
 
     @Test
-    void letsStorageFailuresReachTheCaller() {
-        PersistenceException failure = new PersistenceException("Disk unavailable");
-        repository.failure = failure;
-        assertSame(failure, assertThrows(PersistenceException.class,
-                () -> service.createTask("Title", null, null, Priority.LOW)));
+    void testDelete() {
+        Task task = service.createTask("Buy groceries", null, null, Priority.LOW);
+        service.deleteTask(task.id());
+        assertTrue(service.getAllTasks().isEmpty());
     }
 
-    // Only insert is expected during creation. Unexpected repository calls fail the test.
-    private static final class RecordingRepository implements TaskRepository {
-        private final List<Task> saved = new ArrayList<>();
-        private PersistenceException failure;
+    @Test
+    void testUpdateValidatesAndCleans() {
+        Task task = service.createTask("Buy groceries", null, null, Priority.LOW);
 
-        public Task insert(Task task) {
-            if (failure != null) {
-                throw failure;
-            }
-            saved.add(task);
-            return task;
-        }
+        assertThrows(IllegalArgumentException.class,
+                () -> service.updateTask(task.withTitle("   ")));
+        // the failed update must not have changed what is stored
+        assertEquals("Buy groceries", service.getAllTasks().get(0).title());
 
-        public Task update(Task task) { throw new AssertionError("Unexpected update"); }
-        public Optional<Task> findById(UUID id) { throw new AssertionError("Unexpected lookup"); }
-        public List<Task> findAll() { throw new AssertionError("Unexpected list"); }
-        public void deleteById(UUID id) { throw new AssertionError("Unexpected delete"); }
+        service.updateTask(task.withTitle("  Buy groceries and milk  "));
+        assertEquals("Buy groceries and milk", service.getAllTasks().get(0).title());
+    }
+
+    @Test
+    void testQuickAdd() {
+        Task task = service.quickAdd("essay due fri !high");
+
+        assertEquals("essay", task.title());
+        assertEquals(LocalDate.of(2025, 3, 14), task.dueDate());
+        assertEquals(Priority.HIGH, task.priority());
+        assertEquals(1, service.getAllTasks().size());
+    }
+
+    @Test
+    void testQuickAddWithNoTitleIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> service.quickAdd("due fri !high"));
+        assertTrue(service.getAllTasks().isEmpty());
+    }
+
+    @Test
+    void testFinishingRepeatingTaskCreatesTheNextOne() {
+        Task rent = service.createTask("Pay rent", "landlord portal", LocalDate.of(2025, 3, 14),
+                Priority.HIGH, Recurrence.MONTHLY);
+
+        service.markDone(rent.id());
+
+        List<Task> all = service.getAllTasks();
+        assertEquals(2, all.size());
+        assertTrue(all.get(0).done());
+
+        Task next = all.get(1);
+        assertFalse(next.done());
+        assertEquals("Pay rent", next.title());
+        assertEquals("landlord portal", next.description());
+        assertEquals(LocalDate.of(2025, 4, 14), next.dueDate());
+        assertEquals(Priority.HIGH, next.priority());
+        assertEquals(Recurrence.MONTHLY, next.recurrence());
+    }
+
+    @Test
+    void testFinishingNormalTaskDoesNotCreateAnother() {
+        Task task = service.createTask("Finish lab 4", null, LocalDate.of(2025, 3, 14), Priority.LOW);
+        service.markDone(task.id());
+        assertEquals(1, service.getAllTasks().size());
+    }
+
+    @Test
+    void testMarkingDoneTwiceOnlyCreatesOneNextTask() {
+        Task task = service.createTask("Water plants", null, TODAY, Priority.LOW, Recurrence.DAILY);
+        service.markDone(task.id());
+        service.markDone(task.id());
+        assertEquals(2, service.getAllTasks().size());
+    }
+
+    @Test
+    void testUndoDeleteBringsTheTaskBack() {
+        Task task = service.createTask("Finish lab 4", "due friday", LocalDate.of(2025, 3, 14),
+                Priority.HIGH, Recurrence.WEEKLY);
+        assertFalse(service.canUndoDelete());
+
+        service.deleteTask(task.id());
+        assertTrue(service.getAllTasks().isEmpty());
+        assertTrue(service.canUndoDelete());
+
+        Task restored = service.undoDelete();
+
+        assertEquals(1, service.getAllTasks().size());
+        // same task as before except for the id
+        assertEquals(task.withId(restored.id()), restored);
+        // and there is nothing left to undo
+        assertFalse(service.canUndoDelete());
+        assertNull(service.undoDelete());
+        assertEquals(1, service.getAllTasks().size());
+    }
+
+    @Test
+    void testUndoOnlyRestoresTheMostRecentDelete() {
+        Task first = service.createTask("Finish lab 4", null, null, Priority.LOW);
+        Task second = service.createTask("Buy groceries", null, null, Priority.LOW);
+
+        service.deleteTask(first.id());
+        service.deleteTask(second.id());
+        service.undoDelete();
+
+        assertEquals(1, service.getAllTasks().size());
+        assertEquals("Buy groceries", service.getAllTasks().get(0).title());
+    }
+
+    @Test
+    void testDeletingTaskThatDoesNotExistLeavesNothingToUndo() {
+        service.deleteTask(999);
+        assertFalse(service.canUndoDelete());
+    }
+
+    @Test
+    void testImportSkipsTasksWithBadTitles() {
+        List<Task> fromFile = List.of(
+                new Task("  Finish lab 4  ", "  ", null, Priority.HIGH),
+                new Task("   ", null, null, Priority.LOW),
+                new Task("x".repeat(101), null, null, Priority.LOW),
+                new Task("Buy groceries", null, null, Priority.LOW).withDone(true));
+
+        int imported = service.importTasks(fromFile);
+
+        assertEquals(2, imported);
+        List<Task> all = service.getAllTasks();
+        assertEquals(2, all.size());
+        assertEquals("Finish lab 4", all.get(0).title());
+        assertNull(all.get(0).description());
+        // a finished task stays finished
+        assertTrue(all.get(1).done());
     }
 }

@@ -1,118 +1,174 @@
 package com.daymark.persistence;
 
-import com.daymark.domain.*;
+import com.daymark.domain.Priority;
+import com.daymark.domain.Recurrence;
+import com.daymark.domain.Task;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Path;
-import java.time.Instant;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class SQLiteTaskRepositoryTest {
-    // JUnit gives each test its own folder, keeping test data away from personal tasks.
-    @TempDir Path directory;
-    private DatabaseManager database;
-    private SQLiteTaskRepository repository;
+
+    private DatabaseManager db;
+    private SQLiteTaskRepository repo;
 
     @BeforeEach
     void setUp() {
-        database = new DatabaseManager(directory.resolve("tasks.db"));
-        database.initialize();
-        repository = new SQLiteTaskRepository(database);
+        db = new DatabaseManager(":memory:");
+        repo = new SQLiteTaskRepository(db);
+    }
+
+    @AfterEach
+    void tearDown() {
+        db.close();
     }
 
     @Test
-    void savesEveryFieldAndLoadsThroughANewRepository() {
-        Task task = task(1, true);
-        assertEquals(task, repository.insert(task));
-        // Read through a fresh instance to check that the task was actually persisted.
-        var reopened = new SQLiteTaskRepository(database);
-        assertEquals(task, reopened.findById(task.id()).orElseThrow());
+    void testInsertAndFind() {
+        Task task = repo.insert(new Task("Finish lab 4", "due friday", LocalDate.of(2025, 3, 14), Priority.HIGH));
+
+        assertTrue(task.id() > 0);
+
+        Task found = repo.findById(task.id());
+        assertNotNull(found);
+        assertEquals("Finish lab 4", found.title());
+        assertEquals("due friday", found.description());
+        assertEquals(LocalDate.of(2025, 3, 14), found.dueDate());
+        assertEquals(Priority.HIGH, found.priority());
+        assertFalse(found.done());
     }
 
     @Test
-    void preservesNullFieldsAndHandlesUnknownIds() {
-        Task task = task(1, false);
-        repository.insert(task);
-        assertEquals(task, repository.findById(task.id()).orElseThrow());
-        assertTrue(repository.findById(UUID.randomUUID()).isEmpty());
+    void testFindByIdMissing() {
+        assertNull(repo.findById(999));
     }
 
     @Test
-    void listsInStableOrderAndReturnsAnUnmodifiableList() {
-        assertTrue(repository.findAll().isEmpty());
-        Task first = task(1, false);
-        Task second = task(2, false);
-        // Both timestamps are equal. Insert backwards to exercise the ID tie-breaker.
-        repository.insert(second);
-        repository.insert(first);
-        assertEquals(List.of(first, second), repository.findAll());
-        assertThrows(UnsupportedOperationException.class, () -> repository.findAll().clear());
+    void testFindAllEmpty() {
+        assertTrue(repo.findAll().isEmpty());
     }
 
     @Test
-    void updatesAllFieldsIncludingClearingOptionalValues() {
-        repository.insert(task(1, true));
-        // Reuse the ID but clear the optional fields, so old values can't slip through.
-        Task updated = task(1, false);
-        assertEquals(updated, repository.update(updated));
-        assertEquals(List.of(updated), repository.findAll());
+    void testFindAll() {
+        repo.insert(new Task("Buy groceries", null, null, Priority.LOW));
+        repo.insert(new Task("Study for midterm", null, null, Priority.MEDIUM));
+
+        List<Task> all = repo.findAll();
+        assertEquals(2, all.size());
+        assertEquals("Buy groceries", all.get(0).title());
+        assertEquals("Study for midterm", all.get(1).title());
     }
 
     @Test
-    void rejectsDuplicateInsertsAndMissingUpdates() {
-        Task task = task(1, false);
-        assertThrows(PersistenceException.class, () -> repository.update(task));
-        repository.insert(task);
-        assertThrows(PersistenceException.class, () -> repository.insert(task));
-        assertEquals(List.of(task), repository.findAll());
+    void testUpdate() {
+        Task task = repo.insert(new Task("Buy groceries", null, null, Priority.LOW));
+
+        repo.update(task.withTitle("Buy groceries and milk").withDone(true).withPriority(Priority.HIGH));
+
+        Task found = repo.findById(task.id());
+        assertEquals("Buy groceries and milk", found.title());
+        assertTrue(found.done());
+        assertEquals(Priority.HIGH, found.priority());
     }
 
     @Test
-    void deletesOnlyTheRequestedTaskAndAllowsRepeatedDeletion() {
-        Task first = task(1, false);
-        Task second = task(2, false);
-        repository.insert(first);
-        repository.insert(second);
-        repository.deleteById(first.id());
-        repository.deleteById(first.id());
-        assertEquals(List.of(second), repository.findAll());
+    void testDelete() {
+        Task task = repo.insert(new Task("Study for midterm", null, null, Priority.MEDIUM));
+        repo.delete(task.id());
+
+        assertNull(repo.findById(task.id()));
+        assertTrue(repo.findAll().isEmpty());
     }
 
     @Test
-    void wrapsMalformedStoredDates() throws Exception {
-        repository.insert(task(1, false));
-        // Write bad data directly: a Task's LocalDate can't represent an invalid date.
-        try (var connection = database.openConnection();
-             var statement = connection.prepareStatement("UPDATE tasks SET due_date = ? WHERE id = ?")) {
-            statement.setString(1, "invalid-date");
-            statement.setString(2, new UUID(0, 1).toString());
-            statement.executeUpdate();
-        }
-        assertThrows(PersistenceException.class, repository::findAll);
-        assertThrows(PersistenceException.class, () -> repository.findById(new UUID(0, 1)));
+    void testRecurrenceIsSavedAndUpdated() {
+        Task task = repo.insert(new Task("Pay rent", null, LocalDate.of(2025, 4, 1), Priority.HIGH)
+                .withRecurrence(Recurrence.MONTHLY));
+        assertEquals(Recurrence.MONTHLY, repo.findById(task.id()).recurrence());
+
+        repo.update(task.withRecurrence(Recurrence.WEEKLY));
+        assertEquals(Recurrence.WEEKLY, repo.findById(task.id()).recurrence());
     }
 
     @Test
-    void wrapsConnectionFailures() {
-        // The missing parent folder makes opening this database fail without touching the real one.
-        var unavailable = new SQLiteTaskRepository(new DatabaseManager(directory.resolve("missing/tasks.db")));
-        assertThrows(PersistenceException.class, unavailable::findAll);
+    void testUnknownRecurrenceLoadsAsNotRepeating() throws SQLException {
+        insertRawRow("Finish lab 4", "2025-03-14", "2025-03-01T10:00:00");
+        db.getConnection().createStatement().execute("UPDATE tasks SET recurrence = 'FORTNIGHTLY'");
+
+        assertEquals(Recurrence.NONE, repo.findById(1).recurrence());
     }
 
-    private Task task(int id, boolean completed) {
-        Instant created = Instant.parse("2026-09-05T12:00:00Z");
-        return new Task(new UUID(0, id), completed ? "Finish SQL assignment" : "Read chapter 'two'",
-                completed ? "Check joins and indexes" : null,
-                completed ? LocalDate.of(2026, 9, 6) : null,
-                completed ? Priority.HIGH : Priority.LOW,
-                completed ? TaskStatus.COMPLETED : TaskStatus.ACTIVE,
-                created, completed ? created.plusSeconds(60) : created,
-                completed ? created.plusSeconds(60) : null);
+    // These go around the repository and write rows with raw SQL, the way a
+    // hand-edited or corrupted database file would look.
+
+    @Test
+    void testMalformedDueDateLoadsWithoutDueDate() throws SQLException {
+        insertRawRow("Finish lab 4", "not-a-date", "2025-03-01T10:00:00");
+
+        List<Task> all = repo.findAll();
+        assertEquals(1, all.size());
+        assertEquals("Finish lab 4", all.get(0).title());
+        assertNull(all.get(0).dueDate());
+    }
+
+    @Test
+    void testImpossibleDueDateLoadsWithoutDueDate() throws SQLException {
+        // right format, but there is no February 30th
+        insertRawRow("Buy groceries", "2025-02-30", "2025-03-01T10:00:00");
+
+        Task found = repo.findById(1);
+        assertNotNull(found);
+        assertNull(found.dueDate());
+    }
+
+    @Test
+    void testMalformedCreatedAtStillLoads() throws SQLException {
+        insertRawRow("Study for midterm", "2025-03-14", "03/01/2025 10am");
+
+        Task found = repo.findById(1);
+        assertNotNull(found);
+        assertEquals(LocalDate.of(2025, 3, 14), found.dueDate());
+        assertNotNull(found.createdAt());
+    }
+
+    @Test
+    void testOneBadRowDoesNotHideGoodRows() throws SQLException {
+        repo.insert(new Task("Good task", null, LocalDate.of(2025, 3, 14), Priority.HIGH));
+        insertRawRow("Bad task", "14/03/2025", "garbage");
+        repo.insert(new Task("Another good task", null, null, Priority.LOW));
+
+        List<Task> all = repo.findAll();
+        assertEquals(3, all.size());
+        assertEquals(LocalDate.of(2025, 3, 14), all.get(0).dueDate());
+        assertEquals("Bad task", all.get(1).title());
+        assertNull(all.get(1).dueDate());
+        assertEquals("Another good task", all.get(2).title());
+    }
+
+    @Test
+    void testTaskWithMalformedDateCanStillBeUpdated() throws SQLException {
+        insertRawRow("Finish lab 4", "not-a-date", "2025-03-01T10:00:00");
+
+        Task loaded = repo.findById(1);
+        repo.update(loaded.withDueDate(LocalDate.of(2025, 4, 1)));
+
+        assertEquals(LocalDate.of(2025, 4, 1), repo.findById(1).dueDate());
+    }
+
+    private void insertRawRow(String title, String dueDate, String createdAt) throws SQLException {
+        PreparedStatement ps = db.getConnection().prepareStatement(
+                "INSERT INTO tasks (title, due_date, priority, done, created_at) VALUES (?, ?, 'MEDIUM', 0, ?)");
+        ps.setString(1, title);
+        ps.setString(2, dueDate);
+        ps.setString(3, createdAt);
+        ps.executeUpdate();
+        ps.close();
     }
 }

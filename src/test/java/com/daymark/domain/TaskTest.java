@@ -2,64 +2,52 @@ package com.daymark.domain;
 
 import org.junit.jupiter.api.Test;
 
-import java.time.Instant;
 import java.time.LocalDate;
-import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 
 class TaskTest {
+
     @Test
-    void constructsTaskWithExpectedValues() {
-        UUID id = UUID.randomUUID();
-        LocalDate dueDate = LocalDate.of(2026, 8, 20);
-        Instant createdAt = Instant.parse("2026-08-18T15:00:00Z");
+    void testIsOverdue() {
+        Task task = new Task("Finish lab 4", null, LocalDate.now().minusDays(1), Priority.HIGH);
+        assertTrue(task.isOverdue());
 
-        Task task = new Task(
-                id,
-                "Prepare portfolio demo",
-                "Walk through the architecture",
-                dueDate,
-                Priority.HIGH,
-                TaskStatus.ACTIVE,
-                createdAt,
-                createdAt,
-                null
-        );
-
-        assertEquals(id, task.id());
-        assertEquals("Prepare portfolio demo", task.title());
-        assertEquals(dueDate, task.dueDate());
-        assertEquals(Priority.HIGH, task.priority());
-        assertEquals(TaskStatus.ACTIVE, task.status());
-        assertNull(task.completedAt());
+        Task finished = task.withDone(true);
+        assertFalse(finished.isOverdue());
     }
 
     @Test
-    //TODO: Might need to test each required field separately, but this is a good start.
-    void requiredFieldsRejectNull() {
-        Instant now = Instant.parse("2026-08-18T15:00:00Z");
+    void testWithMethodsReturnCopies() {
+        Task original = new Task("Finish lab 4", null, null, Priority.LOW);
+        Task changed = original.withTitle("Finish lab 5").withPriority(Priority.HIGH).withDone(true);
 
-        assertThrows(NullPointerException.class, () -> new Task(
-                UUID.randomUUID(),
-                "Task",
-                null,
-                null,
-                null,
-                TaskStatus.ACTIVE,
-                now,
-                now,
-                null
-        ));
+        // the original is untouched
+        assertEquals("Finish lab 4", original.title());
+        assertEquals(Priority.LOW, original.priority());
+        assertFalse(original.done());
+
+        assertEquals("Finish lab 5", changed.title());
+        assertEquals(Priority.HIGH, changed.priority());
+        assertTrue(changed.done());
+        assertEquals(original.createdAt(), changed.createdAt());
     }
 
     @Test
-    void enumsExposeTheSupportedValues() {
-        assertEquals(3, Priority.values().length);
-        assertEquals(2, TaskStatus.values().length);
-        assertEquals(Priority.LOW, Priority.valueOf("LOW"));
-        assertEquals(TaskStatus.COMPLETED, TaskStatus.valueOf("COMPLETED"));
+    void testNotOverdueWithoutDueDate() {
+        Task task = new Task("Buy groceries", null, null, Priority.LOW);
+        assertFalse(task.isOverdue());
+    }
+
+    @Test
+    void testDueTodayIsNotOverdue() {
+        Task task = new Task("Study for midterm", "chapters 5-7", LocalDate.now(), Priority.MEDIUM);
+        assertFalse(task.isOverdue());
+    }
+
+    @Test
+    void testPriorityToString() {
+        assertEquals("High", Priority.HIGH.toString());
+        assertEquals("Low", Priority.LOW.toString());
     }
 }

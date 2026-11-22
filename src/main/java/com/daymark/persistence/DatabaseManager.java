@@ -1,120 +1,83 @@
 package com.daymark.persistence;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.Objects;
 
-/** Creates configured SQLite connections and owns schema initialization. */
-public final class DatabaseManager {
-    private static final int BUSY_TIMEOUT_MILLIS = 5_000;
+public class DatabaseManager {
 
-    private static final String CREATE_TASKS_TABLE = """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL CHECK (length(trim(title)) BETWEEN 1 AND 100),
-                description TEXT CHECK (description IS NULL OR length(description) <= 500),
-                due_date TEXT,
-                priority TEXT NOT NULL CHECK (priority IN ('LOW', 'MEDIUM', 'HIGH')),
-                status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'COMPLETED')),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                completed_at TEXT
-            )
-            """;
+    private static final String DEFAULT_DB = "daymark.db";
 
-    private static final String CREATE_STATUS_DUE_DATE_INDEX = """
-            CREATE INDEX IF NOT EXISTS idx_tasks_status_due_date
-            ON tasks (status, due_date)
-            """;
+    private Connection connection;
 
-    private final Path databasePath;
-
-    /**
-     * Creates a manager for the given database location.
-     * The path is converted to an absolute, normalized path.
-     */
-    public DatabaseManager(Path databasePath) {
-        this.databasePath = Objects.requireNonNull(databasePath, "databasePath must not be null")
-                .toAbsolutePath()
-                .normalize();
+    public DatabaseManager() {
+        this(DEFAULT_DB);
     }
 
-    /**
-     * Returns a database manager using Daymark's normal local application-data location.
-     */
-    public static DatabaseManager forDefaultLocation() {
-        return new DatabaseManager(defaultDatabasePath());
-    }
-
-    /**
-     * Chooses the platform's local application-data location, with a home-directory
-     * fallback when LOCALAPPDATA is unavailable.
-     */
-    public static Path defaultDatabasePath() {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        if (localAppData != null && !localAppData.isBlank()) {
-            return Path.of(localAppData, "Daymark", "daymark.db");
-        }
-
-        return Path.of(System.getProperty("user.home"), ".daymark", "daymark.db");
-    }
-
-    public Path databasePath() {
-        return databasePath;
-    }
-
-    /**
-     * Creates the database directory, tables, and indexes if they do not already exist.
-     * This method can safely be called more than once.
-     */
-    public void initialize() {
+    // path can also be ":memory:" which is handy for tests
+    public DatabaseManager(String path) {
         try {
-            createParentDirectory();
-            try (Connection connection = openConnection();
-                 Statement statement = connection.createStatement()) {
-                statement.execute(CREATE_TASKS_TABLE);
-                statement.execute(CREATE_STATUS_DUE_DATE_INDEX);
+            Class.forName("org.sqlite.JDBC");
+            connection = DriverManager.getConnection("jdbc:sqlite:" + path);
+            createTable();
+            addMissingColumns();
+        } catch (ClassNotFoundException e) {
+            System.out.println("SQLite driver not found");
+            e.printStackTrace();
+        } catch (SQLException e) {
+            System.out.println("Could not open database " + path);
+            e.printStackTrace();
+        }
+    }
+
+    private void createTable() throws SQLException {
+        String sql = "CREATE TABLE IF NOT EXISTS tasks ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "title TEXT NOT NULL,"
+                + "description TEXT,"
+                + "due_date TEXT,"
+                + "priority TEXT,"
+                + "done INTEGER DEFAULT 0,"
+                + "created_at TEXT,"
+                + "recurrence TEXT DEFAULT 'NONE'"
+                + ")";
+        Statement stmt = connection.createStatement();
+        stmt.execute(sql);
+        stmt.close();
+    }
+
+    // A daymark.db made by an older version won't have the newer columns, and
+    // CREATE TABLE IF NOT EXISTS doesn't touch a table that already exists.
+    // So check what's there and add anything missing - existing tasks are kept.
+    private void addMissingColumns() throws SQLException {
+        boolean hasRecurrence = false;
+        Statement stmt = connection.createStatement();
+        ResultSet rs = stmt.executeQuery("PRAGMA table_info(tasks)");
+        while (rs.next()) {
+            if (rs.getString("name").equals("recurrence")) {
+                hasRecurrence = true;
             }
-        } catch (IOException | SQLException exception) {
-            throw new PersistenceException(
-                    "Could not initialize the Daymark database at " + databasePath,
-                    exception
-            );
         }
+        rs.close();
+        if (!hasRecurrence) {
+            stmt.execute("ALTER TABLE tasks ADD COLUMN recurrence TEXT DEFAULT 'NONE'");
+        }
+        stmt.close();
     }
 
-    /**
-     * Opens a configured SQLite connection.
-     * Each caller owns and must close the returned connection.
-     */
-    public Connection openConnection() {
+    public Connection getConnection() {
+        return connection;
+    }
+
+    public void close() {
         try {
-            Connection connection = DriverManager.getConnection("jdbc:sqlite:" + databasePath);
-            try (Statement statement = connection.createStatement()) {
-                statement.execute("PRAGMA foreign_keys = ON");
-                statement.execute("PRAGMA busy_timeout = " + BUSY_TIMEOUT_MILLIS);
-            } catch (SQLException configurationFailure) {
+            if (connection != null) {
                 connection.close();
-                throw configurationFailure;
             }
-            return connection;
-        } catch (SQLException exception) {
-            throw new PersistenceException(
-                    "Could not connect to the Daymark database at " + databasePath,
-                    exception
-            );
-        }
-    }
-
-    private void createParentDirectory() throws IOException {
-        Path parent = databasePath.getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
+        } catch (SQLException e) {
+            e.printStackTrace();
         }
     }
 }
