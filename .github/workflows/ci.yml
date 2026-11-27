@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
     tags: ['v*']
@@ -12,10 +13,12 @@ permissions:
 
 jobs:
   test:
-    name: Maven tests (Ubuntu 24.04)
+    name: Full Maven suite (Java 21, including TestFX)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -27,8 +30,9 @@ jobs:
           sudo apt-get install --yes xvfb xauth openbox wmctrl libgtk-3-0t64 libxtst6 libxrender1 libxi6 libasound2t64
       - name: Run full test suite in a managed virtual display
         run: |
-          xvfb-run --auto-servernum --server-args='-screen 0 1600x1200x24' bash -ec '
-            openbox > /tmp/daymark-openbox.log 2>&1 &
+          mkdir -p target
+          xvfb-run --auto-servernum --error-file=target/xvfb.log --server-args='-screen 0 1600x1200x24' bash -ec '
+            openbox > target/openbox.log 2>&1 &
             for i in {1..15}; do
               wmctrl -m > /dev/null 2>&1 && break
               sleep 1
@@ -39,7 +43,7 @@ jobs:
       - name: Capture dependency tree
         if: always()
         run: mvn --batch-mode --no-transfer-progress org.apache.maven.plugins:maven-dependency-plugin:3.8.1:tree -DoutputFile=target/dependency-tree.txt
-      - name: Upload test and dependency reports
+      - name: Upload test reports and desktop diagnostics
         if: always()
         uses: actions/upload-artifact@v6
         with:
@@ -47,6 +51,8 @@ jobs:
           path: |
             target/surefire-reports/**
             target/dependency-tree.txt
+            target/openbox.log
+            target/xvfb.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -55,6 +61,8 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

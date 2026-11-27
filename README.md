@@ -80,12 +80,21 @@ You need JDK 21 and Maven.
 mvn javafx:run
 ```
 
-Daymark stores its database at `%LOCALAPPDATA%\Daymark\daymark.db`
-on Windows, `~/Library/Application Support/Daymark/daymark.db` on macOS, and
-`$XDG_DATA_HOME/daymark/daymark.db` (or `~/.local/share/daymark/daymark.db`) on Linux.
-An existing database in the user data directory takes precedence. To upgrade an older
-installation, launch Daymark from the working directory containing the old `daymark.db`
-on the first run. Startup copies and upgrades that database and preserves the original.
+Daymark stores its database at `%LOCALAPPDATA%\Daymark\daymark.db` on Windows
+(falling back to `~\AppData\Local\Daymark\daymark.db`),
+`~/Library/Application Support/Daymark/daymark.db` on macOS, and
+`$XDG_DATA_HOME/daymark/daymark.db` on Linux when that variable is an absolute path
+(otherwise `~/.local/share/daymark/daymark.db`).
+
+An existing database in the user data directory takes precedence, even if it has no
+tasks. To upgrade an older installation, close the old app and launch the new version
+from the working directory containing the old `daymark.db`. Daymark validates a
+SQLite snapshot before making it active and preserves the original database.
+
+If startup reports a migration error, it shows both database paths. Fix the reported
+problem and relaunch from the same directory to retry. The app-data filesystem must
+support hard links for migration so a completed snapshot can be published without
+overwriting a database already there.
 
 ## Windows package
 
