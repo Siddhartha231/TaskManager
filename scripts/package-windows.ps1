@@ -2,13 +2,15 @@
 param(
     [ValidateSet('msi', 'app-image')]
     [string]$Type = 'msi',
+    [string]$OutputDirectory,
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $target = Join-Path $root 'target'
 $inputDir = Join-Path $target ('package-input-' + [guid]::NewGuid().ToString('N'))
-$dist = Join-Path $target 'dist'
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $target 'dist' }
+$dist = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 [xml]$pom = Get-Content -Raw -LiteralPath (Join-Path $root 'pom.xml')
 $mavenVersion = [string]$pom.project.version
 $version = [version]($mavenVersion.Split('-')[0])
