@@ -80,7 +80,24 @@ You need JDK 21 and Maven.
 mvn javafx:run
 ```
 
-The database file `daymark.db` gets created in whatever directory you run it from.
+Daymark stores its database at `%LOCALAPPDATA%\Daymark\daymark.db`
+on Windows, `~/Library/Application Support/Daymark/daymark.db` on macOS, and
+`$XDG_DATA_HOME/daymark/daymark.db` (or `~/.local/share/daymark/daymark.db`) on Linux.
+An existing database in the user data directory takes precedence. To upgrade an older
+installation, launch Daymark from the working directory containing the old `daymark.db`
+on the first run. Startup copies and upgrades that database and preserves the original.
+
+## Windows package
+
+With JDK 21 in `JAVA_HOME`, Maven, and WiX Toolset 3 on `PATH`, run
+`./scripts/package-windows.ps1 -Type msi` from PowerShell. The installer goes into
+`target/dist/`. Use `-Type app-image` to build a self-contained launcher without WiX.
+The smoke script runs the launcher against temporary profiles and SQLite fixtures.
+
+```powershell
+./scripts/package-windows.ps1 -Type app-image
+./scripts/smoke-windows.ps1 -Launcher target/dist/Daymark/Daymark.exe
+```
 
 ## Tests
 
@@ -88,14 +105,20 @@ The database file `daymark.db` gets created in whatever directory you run it fro
 mvn test
 ```
 
+Run `mvn test` for the full suite. The UI tests open a real JavaFX window, so on Linux
+they need a display server and window manager (CI runs them in Xvfb with Openbox).
+The GitHub Actions workflow runs the full suite on Ubuntu 24.04 with JDK 21 and builds,
+installs, and smoke-tests a Windows MSI on a fresh Windows 2025 runner. Test and Maven
+dependency reports and the MSI are uploaded as workflow artifacts.
+
 There are tests for every layer:
 
 - **Domain** - `TaskTest` and `RecurrenceTest` check overdue logic, that the `with...()`
   methods return copies, and next-due-date math (including a monthly task on the 31st).
 - **Persistence** - `SQLiteTaskRepositoryTest` runs against a real in-memory SQLite
   database, including rows with malformed dates written straight into the table.
-  `DatabaseManagerTest` opens a database file from an older version and checks it gets
-  upgraded without losing tasks.
+  `DatabaseManagerTest` covers fresh installs, legacy migration and restart, committed WAL
+  rows, and preserving the original when migration fails.
 - **Service** - `TaskServiceTest` runs on `InMemoryTaskRepository` instead of SQLite,
   with the date pinned so "today" and "this Friday" always mean the same thing.
   `QuickAddParserTest` covers the quick add syntax, including words that only look like
@@ -104,8 +127,8 @@ There are tests for every layer:
   and that the calendar file follows the format's rules.
 - **UI** - `TaskWorkflowTest` uses TestFX to open the real window and click and type
   through it: adding, editing, deleting and undoing, quick add, keyboard shortcuts,
-  dark mode and import/export. It goes through every layer down to the database, and
-  it takes over the mouse for a few seconds, so don't touch it while it runs.
+  dark mode and import/export. It goes through every layer down to the database and
+  controls the mouse while it runs.
 
 ## Project structure
 
