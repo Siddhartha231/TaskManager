@@ -17,14 +17,27 @@ public class Theme {
     private static final String DARK_CLASS = "dark";
     private static final String DARK_KEY = "darkMode";
 
-    private static final Preferences PREFS = Preferences.userNodeForPackage(Theme.class);
+    private static final Preferences PREFS = openPreferences();
+    private static volatile boolean sessionDark;
+
+    private static Preferences openPreferences() {
+        try {
+            return Preferences.userNodeForPackage(Theme.class);
+        } catch (SecurityException denied) {
+            // The theme still works for this session on accounts without preference access.
+            return null;
+        }
+    }
 
     public static boolean isDark() {
-        return PREFS.getBoolean(DARK_KEY, false);
+        return PREFS == null ? sessionDark : PREFS.getBoolean(DARK_KEY, false);
     }
 
     public static void setDark(boolean dark) {
-        PREFS.putBoolean(DARK_KEY, dark);
+        sessionDark = dark;
+        if (PREFS != null) {
+            PREFS.putBoolean(DARK_KEY, dark);
+        }
     }
 
     // adds or removes the dark class so the node matches the saved choice
